@@ -1,0 +1,167 @@
+#satellite toy problem.
+using Pkg
+using POMDPs
+using SARSOP # load a  POMDP Solver
+using Random
+
+using QuickPOMDPs
+using POMDPTools
+
+const N = 8 # map size 
+const X = 6 # sweep budget
+const ACTIONS = [:stay, :down, :up, :switch]
+
+const NUM_MAPS = 8
+const SCALE = 0.35 # noise frequency, lower gives larger blobs
+const K = 9 # valuable cells per map
+
+fade(t) = t^3 * (t * (6t - 15) + 10)
+
+function perlin(x, y, G)
+    i, j = floor(Int, x), floor(Int, y)
+    u, v = x - i, y - j
+    g(a, b) = G[i+a+1, j+b+1][1] * (u - a) + G[i+a+1, j+b+1][2] * (v - b)
+    lo = g(0, 0) + fade(u) * (g(1, 0) - g(0, 0))
+    hi = g(0, 1) + fade(u) * (g(1, 1) - g(0, 1))
+    return lo + fade(v) * (hi - lo)
+end
+
+function make_map(n, seed)
+    rng = MersenneTwister(seed)
+    L = ceil(Int, n * SCALE) + 2
+    G = [(cos(θ), sin(θ)) for θ in 2π .* rand(rng, L, L)]
+    vals = [perlin(i * SCALE, j * SCALE, G) for i in 1:n, j in 1:n]
+
+    M = falses(n, n)
+
+    M[partialsortperm(vec(vals), 1:K, rev = true)] .= true
+
+    return M
+end
+
+const MAPS = unique([make_map(N, seed) for seed in 1:NUM_MAPS])
+
+const VALUABLE_TOTALS = count.(MAPS)
+
+struct SatState
+    offset :: Int
+    horizontal :: Bool 
+    map :: Int # hidden, which grid is being mapped
+    t :: Int # how many sweeps have been done
+    rows :: NTuple{N, Bool}
+    cols :: NTuple{N, Bool}
+end
+
+is_mapped(s::SatState, i, j) = s.rows[i] || s.cols[j]
+
+function valuable_mapped(s::SatState)
+    M = MAPS[s.map]
+    return count(M[i, j] && is_mapped(s, i, j) for i in 1:N, j in 1:N)
+end
+
+function transition(s::SatState, a::Symbol)
+    s.t >= X && return s # absorbing terminal for SARSOP
+    h, k = s.horizontal, s.offset
+    if a == :down
+        k = max(k - 1, 1)
+    elseif a == :up
+        k = min(k + 1, N)
+    elseif a == :switch
+        h = !h
+    end
+
+    rows = h ? Base.setindex(s.rows, true, k) : s.rows
+    cols = h ? s.cols : Base.setindex(s.cols, true, k)
+
+    return SatState(k, h, s.map, s.t + 1, rows, cols)
+
+end
+
+# observations
+function line_values(s::SatState)
+    M = MAPS[s.map]
+    #return a tuple of booleans corresponding to the passed line.
+    return s.horizontal ? Tuple(M[s.offset, :]) : Tuple(M[:, s.offset])
+end
+
+const ALL_OBS = vec(collect(Iterators.product(ntuple(_ -> (false, true), N)...)))
+
+# initial state
+const EMPTY = ntuple(_ -> false, N)
+const INITIAL_STATES = [SatState(1, true, map, 0, EMPTY, EMPTY) for map in eachindex(MAPS)]
+
+function reachable_states()
+    seen = Set(INITIAL_STATES)
+    frontier = copy(INITIAL_STATES)
+
+    while !isempty(frontier)
+        s = pop!(frontier)
+
+        for a in ACTIONS
+            sp = transition(s, a)
+            sp in seen || (push!(seen, sp); push!(frontier, sp))
+
+        end
+    end
+
+    return collect(seen)
+end
+
+const STATES = reachable_states()
+
+
+m = QuickPOMDP(
+    states = STATES,
+    actions = ACTIONS,
+    observations = ALL_OBS,
+    obstype = NTuple{N,Bool},
+    discount = 0.99, 
+    transition = (s, a) -> Deterministic(transition(s, a)),
+    observation = (a, sp) -> Deterministic(line_values(sp)),
+    reward = (s, a) -> valuable_mapped(transition(s, a)) - valuable_mapped(s),
+    initialstate = Uniform(INITIAL_STATES),
+    isterminal = s -> s.t >= X
+)
+
+println("Random policy:")
+for (s, a, o, r) in stepthrough(m, RandomPolicy(m), "s,a,o,r", max_steps = X)
+    println(" t=$(s.t) line=$(s.horizontal ? "row" : "col") $(s.offset) a=$a obs=$o r=$r")
+end
+
+solver = SARSOPSolver(timeout = 60, precision = 1e-3)
+policy = solve(solver, m)
+println("\nSARSOP policy:")
+hist = simulate(HistoryRecorder(max_steps = X), m, policy)
+for step in eachstep(hist, "s,a,r")
+    println(" t=$(step.s.t) a=$(step.a) r=$(step.r)")
+end
+s0 = first(state_hist(hist))
+
+for i in 1:size(MAPS[s0.map], 1)
+    println(join(Int.(MAPS[s0.map][i, :]), " "))
+end
+
+println("Valuable cells mapped: ", undiscounted_reward(hist), " / ", count(MAPS[s0.map]))
+
+using Statistics
+using Printf
+
+const N_ROLLOUTS = 1000
+
+rand_policy = RandomPolicy(m, rng = MersenneTwister(1))
+sim = RolloutSimulator(rng = MersenneTwister(1), max_steps = X)
+#using BasicPOMCP
+#planner = solve(POMCPSolver(tree_queries = 5_000, max_depth = X), m)
+
+println("\nOverall ($N_ROLLOUTS rollouts):")
+for (name, p) in [("Random", rand_policy), ("SARSOP", policy)]
+    R = [simulate(sim, m, p) for _ in 1:N_ROLLOUTS]
+    @printf(" %-7s mean = %.3f ± %.3f  (min %.2f, max %.2f)\n", name, mean(R), std(R) / sqrt(N_ROLLOUTS), minimum(R), maximum(R))
+end
+
+println("\nPer map:")
+for s0 in INITIAL_STATES
+    r_rand = mean(simulate(sim, m, rand_policy, updater(rand_policy), initialstate(m), s0) for _ in 1:N_ROLLOUTS ÷ 10)
+    r_sarsop = simulate(sim, m, policy, updater(policy), initialstate(m), s0)
+    @printf(" map %d: random = %.2f  SARSOP = %.2f  / %d\n", s0.map, r_rand, r_sarsop, VALUABLE_TOTALS[s0.map])
+end

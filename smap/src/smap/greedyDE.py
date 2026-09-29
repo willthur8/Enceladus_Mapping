@@ -1,4 +1,5 @@
 import numpy as np
+import nbimport
 from smap/src/smap/random_map_+_orbit_generator.ipynb import make_map, make_sweep, coverage_report, make_perlin_splat
 from scipy import optimize
 
