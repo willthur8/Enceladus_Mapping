@@ -1,0 +1,94 @@
+using POMDPs
+using NativeSARSOP
+
+using QuickPOMDPs
+using POMDPTools
+
+const N = 5 # map size 
+const X = 6 # sweep budget
+const ACTIONS = [:stay, :down, :up, :switch]
+
+function make_map(n, r0, c0, h, w)
+    M = falses(n, n)
+
+    M[r0:r0+h-1, c0:c0+w-1] .= true
+
+    return M
+end
+
+# all placements of a 3×3 block inside the 5×5 grid (9 candidate maps)
+const MAPS = [make_map(N, r, c, 3, 3) for r in 1:N-2, c in 1:N-2] |> vec
+
+struct SatState
+    offset :: Int
+    horizontal :: Bool 
+    map :: Int # hidden, which grid is being mapped
+    t :: Int # how many sweeps have been done
+end
+
+function transition(s::SatState, a::Symbol)
+    h, k = s.horizontal, s.offset
+    if a == :down
+        k = max(k - 1, 1)
+    elseif a == :up
+        k = min(k + 1, N)
+    elseif a == :switch
+        h = !h
+    end
+
+    return SatState(k, h, s.map, s.t + 1)
+end
+
+# observations
+function line_values(s::SatState)
+    M = MAPS[s.map]
+    #return a tuple of booleans corresponding to the passed line.
+    return s.horizontal ? Tuple(M[s.offset, :]) : Tuple(M[:, s.offset])
+end
+
+const ALL_OBS = vec(collect(Iterators.product(ntuple(_ -> (false, true), N)...)))
+
+# full state space offset, orientation, map, and step
+const STATES = vec([SatState(k, h, mp, t) for k in 1:N, h in (true, false), mp in eachindex(MAPS), t in 0:X])
+
+# initial state
+const INITIAL_STATES = [SatState(1, true, m, 0) for m in eachindex(MAPS)]
+
+
+m = QuickPOMDP(
+    states = STATES,
+    actions = ACTIONS,
+    observations = ALL_OBS,
+    obstype = NTuple{N,Bool},
+    discount = 0.95, 
+    transition = (s, a) -> Deterministic(transition(s, a)),
+    observation = (a, sp) -> Deterministic(line_values(sp)),
+    reward = (s, a) -> count(line_values(transition(s, a))),
+    initialstate = Uniform(INITIAL_STATES),
+    isterminal = s -> s.t >= X
+)
+
+# unique valuable cells covered reconstructed from the history
+function coverage(hist)
+    sps = collect(eachstep(hist, "sp"))
+    M = MAPS[first(sps).map]
+    rows = Set(sp.offset for sp in sps if sp.horizontal)
+    cols = Set(sp.offset for sp in sps if !sp.horizontal)
+    return count(M[i, j] && (i in rows || j in cols) for i in 1:N, j in 1:N)
+end
+
+println("Random policy:")
+for (s, a, o, r) in stepthrough(m, RandomPolicy(m), "s,a,o,r", max_steps = X)
+println(" t=$(s.t) line=$(s.horizontal ? "row" : "col") $(s.offset) a=$a obs=$o r=$r")
+end
+
+policy = solve(NativeSARSOP.SARSOPSolver(max_time = 30.0), m)
+println("\nSARSOP policy:")
+hist = simulate(HistoryRecorder(max_steps = X), m, policy)
+for step in eachstep(hist, "s,a,r")
+println(" t=$(step.s.t) line=$(step.s.horizontal ? "row" : "col") $(step.s.offset) a=$(step.a) r=$(step.r)")
+end
+println("Total reward (valuable cell-sweeps): ", undiscounted_reward(hist))
+println("Unique valuable cells mapped: ", coverage(hist), " / 9")
+s0 = first(state_hist(hist))
+println(MAPS[s0.map])

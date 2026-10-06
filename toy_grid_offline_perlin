@@ -7,13 +7,13 @@ using Random
 using QuickPOMDPs
 using POMDPTools
 
-const N = 8 # map size 
+const N = 12 # map size 
 const X = 6 # sweep budget
 const ACTIONS = [:stay, :down, :up, :switch]
 
-const NUM_MAPS = 8
+const NUM_MAPS = 20
 const SCALE = 0.35 # noise frequency, lower gives larger blobs
-const K = 9 # valuable cells per map
+const K = 12 # valuable cells per map
 
 fade(t) = t^3 * (t * (6t - 15) + 10)
 
@@ -27,7 +27,7 @@ function perlin(x, y, G)
 end
 
 function make_map(n, seed)
-    rng = MersenneTwister(seed)
+    rng = MersenneTwister(seed*2)
     L = ceil(Int, n * SCALE) + 2
     G = [(cos(θ), sin(θ)) for θ in 2π .* rand(rng, L, L)]
     vals = [perlin(i * SCALE, j * SCALE, G) for i in 1:n, j in 1:n]
@@ -39,9 +39,7 @@ function make_map(n, seed)
     return M
 end
 
-const MAPS = unique([make_map(N, seed) for seed in 1:NUM_MAPS])
-
-const VALUABLE_TOTALS = count.(MAPS)
+const GP
 
 struct SatState
     offset :: Int
