@@ -15,13 +15,34 @@ function build_query_index(in_map::BitMatrix)
     return Q
 end
 
-# cells observed by one pass, clipped to the map
-function swath(pomdp::SatellitePOMDP, offset::Int, horizontal::Bool)
-    L = LinearIndices(pomdp.map_size)
-    cells = horizontal ? L[offset, :] : L[:, offset]
-    return [c for c in cells if pomdp.in_map[c]]
+num_offsets(pomdp::SatellitePOMDP) = maximum(pomdp.map_size)
+num_angles(pomdp::SatellitePOMDP) = round(Int, 180/pomdp.angle_step)
+heading(pomdp::SatellitePOMDP, angle::Int) = (angle - 1)*pomdp.angle_step
+
+# A pass is a straight track at heading θ (deg counterclockwise from +x, same frame as stripe_axes in plume_map.jl)
+# a signed distance d from the map center. A cell is in the swath when its center is within half the swath width
+# of the track: |-x sin θ + y cos θ - d| <= w/2, all in cells. Offset k is d = k - (n+1)/2, so at heading 0
+# offset 1 is the bottom row, and :up moves the track toward its left side.
+function build_swaths(in_map::BitMatrix, angle_step::Float64, swath_width::Float64)
+    n1, n2 = size(in_map)
+    n = max(n1, n2)
+    L = LinearIndices(in_map)
+    x = [j - (n2 + 1)/2 for i in 1:n1, j in 1:n2]
+    y = [-(i - (n1 + 1)/2) for i in 1:n1, j in 1:n2]
+
+    swaths = Matrix{Vector{Int}}(undef, n, round(Int, 180/angle_step))
+    for offset in 1:n, angle in 1:size(swaths, 2)
+        θ = (angle - 1)*angle_step
+        d = offset - (n + 1)/2
+        on_track = abs.(-x .* sind(θ) .+ y .* cosd(θ) .- d) .<= swath_width/2
+        swaths[offset, angle] = L[in_map .& on_track]
+    end
+    return swaths
 end
 
+# cells observed by one pass, clipped to the map
+swath(pomdp::SatellitePOMDP, offset::Int, angle::Int) = pomdp.swaths[offset, angle]
+
 function POMDPs.initialstate(pomdp::SatellitePOMDP)
-    return Deterministic(SatelliteState(pomdp.init_offset, pomdp.init_horizontal, pomdp.true_map, 0.0, Set{Int}()))
+    return Deterministic(SatelliteState(pomdp.init_offset, pomdp.init_angle, pomdp.true_map, 0.0, Set{Int}()))
 end

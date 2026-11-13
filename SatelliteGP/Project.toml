@@ -1,0 +1,31 @@
+# Package versions are pinned to the ones in Will's global Julia 1.13 environment (Nov 2026).
+# Create Manifest.toml once on the Mac with:
+#     julia --project=. -e 'using Pkg; Pkg.instantiate()'
+# then copy Project.toml and Manifest.toml to the cluster and run the same command there.
+
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+KernelFunctions = "ec8451be-7e33-11e9-00cf-bbf324bd1392"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+MCTS = "e12ccd36-dcad-5f33-8774-9175229e7b33"
+POMDPTools = "7588e00f-9cae-40de-98dc-e0c70c48cdd7"
+POMDPs = "a93abf59-7444-517b-a68a-c42f96afdd7d"
+Parameters = "d96e819e-fc66-5662-9728-84c9c7592b0a"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+Distributions = "=0.25.131"
+KernelFunctions = "=0.11.1"
+MCTS = "=0.5.7"
+POMDPTools = "=1.1.0"
+POMDPs = "=1.0.0"
+Parameters = "=0.12.3"
+Plots = "=1.41.7"
+julia = "1.13"

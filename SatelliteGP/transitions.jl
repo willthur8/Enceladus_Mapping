@@ -1,10 +1,15 @@
-function next_pose(pomdp::SatellitePOMDP, offset::Int, horizontal::Bool, a::Symbol)
-    if a == :switch
-        return offset, !horizontal
+function next_pose(pomdp::SatellitePOMDP, offset::Int, angle::Int, a::Symbol)
+    n = num_offsets(pomdp)
+    offset = clamp(offset + dir[a], 1, n)
+    angle = angle + turn[a]
+
+    # heading θ + 180° is the same track as heading θ with d flipped to -d
+    if angle < 1 || angle > num_angles(pomdp)
+        angle = mod1(angle, num_angles(pomdp))
+        offset = n + 1 - offset
     end
 
-    n = horizontal ? pomdp.map_size[1] : pomdp.map_size[2]
-    return clamp(offset + dir[a], 1, n), horizontal
+    return offset, angle
 end
 
 function generate_s(pomdp::SatellitePOMDP, s::SatelliteState, a::Symbol, rng::RNG) where {RNG <: AbstractRNG}
@@ -13,9 +18,9 @@ function generate_s(pomdp::SatellitePOMDP, s::SatelliteState, a::Symbol, rng::RN
         return s
     end
 
-    offset, horizontal = next_pose(pomdp, s.offset, s.horizontal, a)
-    new_mapped = union(s.mapped, swath(pomdp, offset, horizontal))
+    offset, angle = next_pose(pomdp, s.offset, s.angle, a)
+    new_mapped = union(s.mapped, swath(pomdp, offset, angle))
     new_cost_expended = s.cost_expended + action_cost(pomdp, a)
 
-    return SatelliteState(offset, horizontal, s.location_states, new_cost_expended, new_mapped)
+    return SatelliteState(offset, angle, s.location_states, new_cost_expended, new_mapped)
 end

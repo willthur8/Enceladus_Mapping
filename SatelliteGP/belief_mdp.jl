@@ -1,8 +1,5 @@
-#adapted from sisl/SBO_AIPPMS Rover/GP_BMDP_Rover/belief_mdp.jl
-"""
-    BeliefMDP(pomdp, updater, belief_reward)
-Create a belief MDP corresponding to POMDP `pomdp` with belief updates performed by `updater`.
-"""
+# Adapted from sisl/SBO_AIPPMS Rover/GP_BMDP_Rover/belief_mdp.jl
+
 struct BeliefMDP{P<:POMDP, U<:Updater, B, A} <: MDP{B, A}
     pomdp::P
     updater::U
@@ -25,6 +22,21 @@ function POMDPs.gen(bmdp::BeliefMDP, b, a, rng::AbstractRNG)
     bp = update(bmdp.updater, b, a, o)
 
     r = bmdp.belief_reward(bmdp.pomdp, b, a, bp)
+    return (sp=bp, r=r)
+end
+
+
+function POMDPs.gen(bmdp::BeliefMDP{<:SatellitePOMDP}, b, a, rng::AbstractRNG)
+    pomdp = bmdp.pomdp
+    if isterminal(pomdp, b)
+        return (sp=b, r=0.0)
+    end
+
+    offset, angle = next_pose(pomdp, b.offset, b.angle, a)
+    o = sample_observation(rng, pomdp, b, swath(pomdp, offset, angle))
+    bp = update(bmdp.updater, b, a, o)
+
+    r = bmdp.belief_reward(pomdp, b, a, bp)
     return (sp=bp, r=r)
 end
 
