@@ -44,5 +44,7 @@ end
 swath(pomdp::SatellitePOMDP, offset::Int, angle::Int) = pomdp.swaths[offset, angle]
 
 function POMDPs.initialstate(pomdp::SatellitePOMDP)
-    return Deterministic(SatelliteState(pomdp.init_offset, pomdp.init_angle, pomdp.true_map, 0.0, Set{Int}()))
+    jets = pomdp.jet_map === nothing ? Float64[] : copy(pomdp.jet_map.z0)
+    return Deterministic(SatelliteState(pomdp.init_offset, pomdp.init_angle, pomdp.true_map, 0.0, Set{Int}(),
+                                        0, zeros(Int, length(pomdp.in_map)), jets))
 end

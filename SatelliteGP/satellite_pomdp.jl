@@ -15,6 +15,9 @@ struct SatelliteState
     location_states::Matrix{Float64}
     cost_expended::Float64
     mapped::Set{Int}
+    t::Int # passes flown so far
+    last_seen::Vector{Int} # pass each cell was last observed, by linear cell index (0 = never)
+    jets::Vector{Float64} # jet log-strengths when the jets change (empty otherwise)
 end
 
 struct SatelliteBelief
@@ -23,6 +26,8 @@ struct SatelliteBelief
     location_belief::GaussianProcess
     cost_expended::Float64
     mapped::Set{Int}
+    t::Int
+    last_seen::Vector{Int}
 end
 
 
@@ -43,8 +48,13 @@ end
     value_threshold::Float64 = 0.66 # plume area boundary, used for plotting
     reward_floor::Float64 = 0.0 # deposition below this earns nothing: reward is max(f - reward_floor, 0)
     cost_budget::Float64 = 3.0
-    info_weight::Float64 = 0.0 # weight on variance reduction in belief_reward
-    var_cache::Dict{Any, Vector{Float64}} = Dict{Any, Vector{Float64}}() # posterior variance by observed points, see location_variance
+    info_weight::Float64 = 0.0 # weight on variance reduction in belief_reward (only when the jets do not change)
+    jet_T::Float64 = Inf # passes for a jet's log-strength correlation to fall to 1/e; Inf = jets never change (v3)
+    jet_map = nothing # JetMap (plume_map.jl) when jet_T is finite
+    jet_path::Vector{Vector{Float64}} = Vector{Float64}[] # jet log-strengths at passes 0, 1, 2, ..., drawn once per trial
+    map_path::Vector{Matrix{Float64}} = Matrix{Float64}[] # map at each of those passes, so every policy sees the same jets
+    allow_stay::Bool = false # adds :stay, which flies the current track again
+    var_cache::Dict{Any, Any} = Dict{Any, Any}() # posterior variance by observed points, see location_variance
     var_cache_bytes::Float64 = 0.5e9 # approximate memory the cache may use before it is cleared (per trial)
     var_cache_used::Float64  = 0.0 # approximate memory the cache uses now, see location_variance
     rng::AbstractRNG

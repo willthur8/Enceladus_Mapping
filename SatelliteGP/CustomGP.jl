@@ -21,10 +21,23 @@ mutable struct GaussianProcess
     KXqX # K(Xq,X) the points we are querying and we have measured
     KXqXq
     α # (K(X,X) + diag(ν)) \ (y - m(X)), so the posterior mean is mXq + KXqX α
+    time # nothing for a field that does not change between passes, otherwise a TimeKernel
+    t_obs # pass of each design point (empty when time is nothing). KXqX is spatial the time factor is applied per query
 end
 
 # prior with no observations
-GaussianProcess(m, mXq, k, X_query, KXqXq) = GaussianProcess(m, mXq, k, [], X_query, [], [], [], [], KXqXq, [])
+GaussianProcess(m, mXq, k, X_query, KXqXq; time=nothing) = GaussianProcess(m, mXq, k, [], X_query, [], [], [], [], KXqXq, [], time, Int[])
+
+# Changing field: k((x,t),(x′,t′)) = k(x,x′) g(t - t′) with g(Δt) = a + (1 - a) exp(-|Δt|/T).
+# a = share of the variance that never changes, T = decay time of the rest, in passes. a = 0 is one plain exponential.
+struct TimeKernel
+    a::Float64
+    T::Float64
+end
+time_corr(tk::TimeKernel, Δt) = tk.a + (1 - tk.a)*exp(-abs(Δt)/tk.T)
+time_corr(GP::GaussianProcess, ta, tb) = time_corr.(Ref(GP.time), ta .- transpose(tb))
+
+last_pass(GP::GaussianProcess) = isempty(GP.t_obs) ? 0 : GP.t_obs[end]
 
 # nonstationary kernel k(x,x′) = s(x) s(x′) k₀(x,x′), where s is a per-cell prior std map
 struct ScaledFieldKernel{Kₒ<:Kernel} <: Kernel
@@ -58,8 +71,15 @@ end
 
 has_data(GP::GaussianProcess) = GP.X != []
 
-# L \ K(X, Xq[q]): whitened cross covariance, one column per query index in q
-whiten(GP::GaussianProcess, q) = LowerTriangular(GP.L) \ Matrix(transpose(GP.KXqX[q, :]))
+# K((Xq[q], tq), X): rows q of the cross covariance with the query points at pass tq (q = : for all, no copy)
+function cross_cov(GP::GaussianProcess, q, tq)
+    KqX = q === Colon() ? GP.KXqX : GP.KXqX[q, :]
+    GP.time === nothing && return KqX
+    return KqX .* time_corr(GP, tq, GP.t_obs)
+end
+
+
+whiten(GP::GaussianProcess, q, tq) = LowerTriangular(GP.L) \ Matrix(transpose(cross_cov(GP, q, tq)))
 
 function query_no_data(GP::GaussianProcess)
     μₚ = GP.mXq
@@ -68,40 +88,47 @@ function query_no_data(GP::GaussianProcess)
     return (μₚ, νₚ, S)
 end
 
-# full posterior mean, variance, and covariance at every query point (Nq × Nq, so keep it out of planning loops)
-function query(GP::GaussianProcess)
+# full posterior mean, variance, and covariance at every query point 
+# tq is the pass the posterior is wanted at 
+function query(GP::GaussianProcess; tq=last_pass(GP))
+
     has_data(GP) || return query_no_data(GP)
-    V = whiten(GP, 1:size(GP.KXqX, 1))
-    μₚ = GP.mXq + GP.KXqX*GP.α
+    V = whiten(GP, 1:size(GP.KXqX, 1), tq)
+
+    μₚ = GP.mXq + cross_cov(GP, :, tq)*GP.α
     S = GP.KXqXq - V'V
-    νₚ = diag(S) .+ eps() # eps prevents numerical issues
+
+    νₚ = diag(S) .+ eps() 
     return (μₚ, νₚ, S)
 end
 
 # posterior mean at every query point, O(Nq n)
-query_mean(GP::GaussianProcess) = has_data(GP) ? GP.mXq + GP.KXqX*GP.α : GP.mXq
+query_mean(GP::GaussianProcess; tq=last_pass(GP)) = has_data(GP) ? GP.mXq + cross_cov(GP, :, tq)*GP.α : GP.mXq
 
 # posterior variance at every query point without forming the Nq × Nq covariance. It depends only on X, not on y.
-function query_var(GP::GaussianProcess)
+function query_var(GP::GaussianProcess; tq=last_pass(GP))
     has_data(GP) || return diag(GP.KXqXq) .+ eps()
-    V = whiten(GP, 1:size(GP.KXqX, 1))
+    V = whiten(GP, 1:size(GP.KXqX, 1), tq)
     return diag(GP.KXqXq) .- vec(sum(abs2, V, dims=1)) .+ eps()
 end
 
 # posterior mean, variance, and covariance at the query indices q only
-function query_cells(GP::GaussianProcess, q)
+function query_cells(GP::GaussianProcess, q; tq=last_pass(GP))
     has_data(GP) || return (GP.mXq[q], diag(GP.KXqXq)[q] .+ eps(), GP.KXqXq[q, q])
-    V = whiten(GP, q)
-    μq = GP.mXq[q] + GP.KXqX[q, :]*GP.α
+    V = whiten(GP, q, tq)
+    μq = GP.mXq[q] + cross_cov(GP, q, tq)*GP.α
     Sq = GP.KXqXq[q, q] - V'V
     νq = diag(Sq) .+ eps()
     return (μq, νq, Sq)
 end
 
-function posterior(GP::GaussianProcess, X_samp, y_samp, ν_samp)
+
+function posterior(GP::GaussianProcess, X_samp, y_samp, ν_samp; t_samp=Int[])
     isempty(X_samp) && return GP
 
-    Kss = K(X_samp, X_samp, GP.k) + Diagonal(ν_samp) + GP_JITTER*I
+    Kss = K(X_samp, X_samp, GP.k)
+    GP.time === nothing || (Kss = Kss .* time_corr(GP, t_samp, t_samp))
+    Kss = Kss + Diagonal(ν_samp) + GP_JITTER*I
     KXqXs = K(GP.X_query, X_samp, GP.k)
 
     if !has_data(GP)
@@ -111,7 +138,9 @@ function posterior(GP::GaussianProcess, X_samp, y_samp, ν_samp)
     else
         # a whole swath arrives at once, so extend the factor by one block:
         # [L 0; B' C] with B = L \ K(X, X_samp) and C C' = Kss - B'B
-        B = LowerTriangular(GP.L) \ K(GP.X, X_samp, GP.k)
+        KXXs = K(GP.X, X_samp, GP.k)
+        GP.time === nothing || (KXXs = KXXs .* time_corr(GP, GP.t_obs, t_samp))
+        B = LowerTriangular(GP.L) \ KXXs
         C = chol_lower(Kss - B'B)
         X, y, ν = [GP.X; X_samp], [GP.y; y_samp], [GP.ν; ν_samp]
         L = [GP.L zeros(size(GP.L, 1), length(X_samp)); B' C]
@@ -120,6 +149,26 @@ function posterior(GP::GaussianProcess, X_samp, y_samp, ν_samp)
 
     Lt = LowerTriangular(L)
     α = Lt' \ (Lt \ (y - μ(X, GP.m)))
+    t_obs = GP.time === nothing ? GP.t_obs : [GP.t_obs; t_samp]
 
-    return GaussianProcess(GP.m, GP.mXq, GP.k, X, GP.X_query, y, ν, L, KXqX, GP.KXqXq, α)
+    return GaussianProcess(GP.m, GP.mXq, GP.k, X, GP.X_query, y, ν, L, KXqX, GP.KXqXq, α, GP.time, t_obs)
 end
+
+# Pieces of the forecast in beliefs.jl, at pass tq: the variance ν, and when the fixed share a > 0 also
+# Q_ss = diag(Ks A⁻¹ Ks') and Q_st = diag(Kt A⁻¹ Ks'), where Ks is the spatial cross covariance (no time decay),
+# Kt the cross covariance at tq, and A = K(X,X) + diag(ν).
+function query_var_terms(GP::GaussianProcess; tq=last_pass(GP))
+    s2 = diag(GP.KXqXq)
+    
+    has_data(GP) || return (ν=s2 .+ eps(), Qss=zeros(length(s2)), Qst=zeros(length(s2)))
+    Vt = whiten(GP, :, tq)
+
+    ν = s2 .- vec(sum(abs2, Vt, dims=1)) .+ eps()
+    (GP.time === nothing || GP.time.a == 0) && return (ν=ν, Qss=Float64[], Qst=Float64[])
+
+    Vs = LowerTriangular(GP.L) \ Matrix(transpose(GP.KXqX))
+    return (ν=ν, Qss=vec(sum(abs2, Vs, dims=1)), Qst=vec(sum(Vt .* Vs, dims=1)))
+end
+
+# Ks α: the part of the posterior mean shift computed with spatial covariances only (used by the forecast when a > 0)
+query_mean_space(GP::GaussianProcess) = has_data(GP) ? GP.KXqX*GP.α : zeros(length(GP.mXq))

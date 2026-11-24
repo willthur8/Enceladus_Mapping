@@ -132,6 +132,69 @@ function field_statistics(rng::RNG, in_map::BitMatrix, p::PlumeParams; n_maps=50
 
 end
 
+# each jet's fallout at strength 1, so  new map is a weighted sum. Jet j has strength exp(z_j)/n_jets as
+# in raw_deposition, and its log-strength is an AR(1) process between passes (step_jets in transitions.jl):
+# z_j(t+1) = φ z_j(t) + σ_η ε
+# φ = exp(-1/jet_T)
+# σ_η = jet_σ sqrt(1 - φ²)
+# ε ~ N(0, 1)
+# so z keeps v3's spread (mean 0, std jet_σ) and its correlation k passes apart is φ^k = exp(-k/jet_T).
+struct JetMap
+    fixed::Matrix{Float64} # curtain fallout/norm_const + texture, NaN outside the map
+    footprints::Vector{Matrix{Float64}} # each jet's fallout at strength 1, divided by norm_const
+    z0::Vector{Float64} # log-strengths of the first map
+    n_jets::Int
+    jet_σ::Float64
+end
+
+# fallout at every cell from a source at s with strength 1 averaged over 4x4 points per cell like in raw_deposition to stpo aliasisng
+function unit_fallout(X, Y, s, km_per_cell, p::PlumeParams)
+    F = zeros(size(X))
+    sub = ((1:4) .- 0.5)./4 .- 0.5
+    for du in sub, dv in sub
+        d2 = (X .+ du*km_per_cell .- s[1]).^2 .+ (Y .+ dv*km_per_cell .- s[2]).^2
+        F .+= (exp.(-d2 ./ (2p.w_near^2)) .+ p.far_frac .* exp.(-d2 ./ (2p.w_far^2))) ./ 16
+    end
+    return F
+end
+
+# draws random numbers in the same order as raw_deposition, so a seed's first map matches build_map
+function build_jet_map(rng::RNG, in_map::BitMatrix, p::PlumeParams, norm_const::Float64) where {RNG<:AbstractRNG}
+    n = size(in_map, 1)
+    X, Y, km_per_cell = cell_km(n, p.R_map)
+    curtain = zeros(n, n)
+
+    footprints = Matrix{Float64}[]
+    z0 = Float64[]
+
+
+    for (c0, u) in stripe_axes(p)
+        ts = -p.stripe_len/2:5.0:p.stripe_len/2
+        for t in ts
+            curtain .+= (p.curtain_amp/length(ts)) .* unit_fallout(X, Y, c0 + t*u, km_per_cell, p)
+        end
+
+        for t in p.stripe_len .* (rand(rng, p.n_jets) .- 0.5)
+            push!(footprints, unit_fallout(X, Y, c0 + t*u, km_per_cell, p) ./ norm_const)
+            push!(z0, p.jet_σ*randn(rng))
+        end
+    end
+
+    texture = raw_field(rng, (n, n), p.scale) ./ PERLIN_STD
+    fixed = curtain ./ norm_const .+ p.texture .* texture
+    fixed[.!in_map] .= NaN
+    return JetMap(fixed, footprints, z0, p.n_jets, p.jet_σ)
+end
+
+# map for jet log-strengths z
+function jet_field(jm::JetMap, z)
+    M = copy(jm.fixed)
+    for (F, zj) in zip(jm.footprints, z)
+        M .+= (exp(zj)/jm.n_jets) .* F
+    end
+    return M
+end
+
 function cached_field_statistics(seed::Int, in_map::BitMatrix, p::PlumeParams; n_maps=500, valuable_frac=0.25, dir="cache")
     compute() = field_statistics(MersenneTwister(seed), in_map, p; n_maps=n_maps, valuable_frac=valuable_frac)
     dir === nothing && return compute()

@@ -25,7 +25,29 @@ end
 swath_gain(pomdp::SatellitePOMDP, ev, mapped, offset::Int, angle::Int) =
     sum((ev[c] for c in swath(pomdp, offset, angle) if !(c in mapped)), init=0.0)
 
+refreshes(pomdp::SatellitePOMDP) = isfinite(pomdp.jet_T)
+freshness(pomdp::SatellitePOMDP, last_seen::Int, t_obs::Int) = last_seen == 0 ? 1.0 : -expm1(-(t_obs - last_seen)/pomdp.jet_T)
+
+# E[max(f - τ, 0)] for f ~ N(μ, ν), same as expected_cell_value
+function expected_value(pomdp::SatellitePOMDP, μ, ν)
+    σ = sqrt(ν)
+    m = μ - pomdp.reward_floor
+    z = m/σ
+    return m*cdf(Normal(), z) + σ*pdf(Normal(), z)
+end
+
+# expected reward of flying the pass at (o, θ) as pass t_obs, k passes after the forecast's belief. google decorrelation AR1
+function fresh_gain(pomdp::SatellitePOMDP, f::Forecast, last_seen, t_obs::Int, k::Int, offset::Int, angle::Int)
+    return sum((expected_value(pomdp, forecast_cell(f, pomdp.query_index[c], k)...)*freshness(pomdp, last_seen[c], t_obs)
+                for c in swath(pomdp, offset, angle)), init=0.0)
+end
+
 function POMDPs.reward(pomdp::SatellitePOMDP, s::SatelliteState, a::Symbol, sp::SatelliteState)
+    if refreshes(pomdp)
+        sp.t == s.t && return 0.0 # terminal, no pass
+        return sum((cell_value(pomdp, c, sp.location_states[c])*freshness(pomdp, s.last_seen[c], sp.t)
+                    for c in swath(pomdp, sp.offset, sp.angle)), init=0.0)
+    end
     new_cells = setdiff(sp.mapped, s.mapped)
     return sum((cell_value(pomdp, c, s.location_states[c]) for c in new_cells), init=0.0)
 end
@@ -36,6 +58,9 @@ function belief_reward(pomdp::SatellitePOMDP, b::SatelliteBelief, a::Symbol, bp:
     if isterminal(pomdp, b)
         return r
     end
+
+    # changing jets: score the pass with the belief forecast one pass ahead, to when the pass is flown
+    refreshes(pomdp) && return fresh_gain(pomdp, location_forecast(pomdp, b), b.last_seen, bp.t, 1, bp.offset, bp.angle)
 
     # score with the belief before the observation: same expectation, no observation noise
     μ_init, ν_init = location_mean_var(pomdp, b)
